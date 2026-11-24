@@ -1,5 +1,8 @@
 FROM python:3.10-bullseye
 
+# Debian 11 (bullseye) packages are now only on archive.debian.org.
+RUN sed -i 's|http://deb.debian.org|http://archive.debian.org|g' /etc/apt/sources.list
+
 WORKDIR /workspace
 
 # Update and install dependencies

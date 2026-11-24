@@ -11,6 +11,7 @@ Reference: https://github.com/yiyihum/da-code/tree/main/da_agent/envs/da_agent.p
 """
 
 import logging
+import re
 import os
 import getpass
 import time
@@ -140,7 +141,15 @@ class DA_Agent_Env(gym.Env):
         self.cache_dir: str = os.path.join(self.cache_dir_base, self.task_id)
         # os.makedirs(self.cache_dir, exist_ok=True)
         self.instruction = task_config["question"]
-        self.post_process_func = [post_process_f for post_process_f in task_config["post_process_func"] if post_process_f] if "post_process_func" in task_config else []
+        if "post_process_func" in task_config:
+            self.post_process_func = [post_process_f for post_process_f in task_config["post_process_func"] if post_process_f]
+        else:
+            # tasks/dev.jsonl no longer carries post_process_func; chart outputs are the
+            # first argument of each compare_image check (same list as the earlier dev.jsonl).
+            eval_funcs = task_config["eval_func"] if isinstance(task_config["eval_func"], list) else [task_config["eval_func"]]
+            images = [m.group(1) for f in eval_funcs
+                      if (m := re.match(r"\s*compare_image\(\s*(?:output_file_name\s*=\s*)?['\"]([^'\"]+)['\"]", f))]
+            self.post_process_func = [f"image_post_process('{name}')" for name in images]
         
     def close(self):
         self.container.stop()

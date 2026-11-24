@@ -308,7 +308,7 @@ class Evaluator:
                         "timing": step.get('timing')
                     })
 
-        info = {"finished": result["finished"], "steps": result["steps"], 
+        info = {"finished": result["finished"], "steps": result.get("steps"), 
                 "result": result["result"],
                 "added_files": result["result_files"]["added_files"],
                 "changed_files": result["result_files"]["changed_files"],

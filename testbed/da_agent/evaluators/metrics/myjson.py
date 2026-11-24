@@ -302,7 +302,7 @@ def compare_json(
                         warn(f"{field_path}[{i}]: no matching element found output")
                         element_scores.append(0.0)
                         element_errors.append((0.0, f"{field_path}[{i}]: no matching element found in output"))
-                avg = sum(element_scores) / len(element_scores) if element_scores else 0.0
+                avg = sum(element_scores) / len(element_scores) if element_scores else 1.0  # empty matches empty
                 min_es, combined_msg = truncate_errors(element_errors)
                 # Only warn if there were actual mismatches
                 return avg, (min_es, combined_msg)
@@ -326,7 +326,7 @@ def compare_json(
                         element_scores.append(s)
                         if s < 1.0:
                             element_errors.append((es, em))
-                avg = sum(element_scores) / len(element_scores) if element_scores else 0.0
+                avg = sum(element_scores) / len(element_scores) if element_scores else 1.0  # empty matches empty
                 min_es, combined_msg = truncate_errors(element_errors)
                 return avg, (min_es, combined_msg)
             else:
@@ -400,7 +400,7 @@ def compare_json(
                         element_scores.append(s)
                         if s < 1.0:
                             element_errors.append((es, em))
-                avg = sum(element_scores) / len(element_scores) if element_scores else 0.0
+                avg = sum(element_scores) / len(element_scores) if element_scores else 1.0  # empty matches empty
                 min_es, combined_msg = truncate_errors(element_errors)
                 return avg, (min_es, combined_msg)
             if not isinstance(output_val, (int, float)) or not isinstance(gold_val, (int, float)):
@@ -656,6 +656,11 @@ def compare_json(
                     errors.append((0.0, f"{field_path}: key not found in gold"))
 
     # Start traversal from root for compare_json
+    # No thresholds given: compare every top-level field of the gold JSON with the
+    # default rule (otherwise no field is compared and the score is always 0).
+    if not thresholds and isinstance(gold_data, dict):
+        thresholds = {key: None for key in gold_data}
+
     traverse_thresholds(output_data, gold_data, thresholds)
 
     # Limit total errors to max 50, sorted by error_score (lowest/most severe first)

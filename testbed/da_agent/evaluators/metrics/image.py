@@ -413,6 +413,17 @@ class ImageTest:
             final_score = 1.0 if scores == float(total_keys) else 0.0
             return (final_score, output_dict, {'subplot_scores': {'single': final_score}, 'errors': errors})
         
+def _npy_subplot_keys(npy_path: str) -> Optional[set]:
+    """Subplot keys saved in a Plotprocess .npy file; None if it is missing or not a subplot dict."""
+    try:
+        data = np.load(npy_path, allow_pickle=True).item()
+    except Exception:
+        return None
+    if isinstance(data, dict) and all(str(k).startswith("subplot_") for k in data):
+        return set(data)
+    return None
+
+
 def compare_image(output_file_name: str, gold_file_name: str, calculate_columns: list[str] = ['type']) -> Dict[str, Any]:
     """
     @args:
@@ -478,8 +489,17 @@ def compare_image(output_file_name: str, gold_file_name: str, calculate_columns:
         combined_subplot_scores = {}
         all_subplot_keys = set(numpy_subplot_matches.keys()) | set(info_subplot_scores.keys())
 
+        # Plotprocess.plot_process saves no data for a subplot it extracts nothing from
+        # (e.g. a KDE plot) but still lists it in the .json. When the result and gold .npy
+        # hold the same subplots, a subplot missing from both has no data to compare, so
+        # only its figure properties decide it.
+        result_keys, gold_keys = _npy_subplot_keys(result_npy), _npy_subplot_keys(gold_npy)
+        no_data_subplots = set()
+        if result_keys is not None and result_keys == gold_keys:
+            no_data_subplots = set(info_subplot_scores) - result_keys
+
         for subplot_key in all_subplot_keys:
-            numpy_match = numpy_subplot_matches.get(subplot_key, False)
+            numpy_match = numpy_subplot_matches.get(subplot_key, subplot_key in no_data_subplots)
             info_match = info_subplot_scores.get(subplot_key, 0.0) == 1.0
             # Subplot scores 1 only if both match
             combined_subplot_scores[subplot_key] = 1.0 if (numpy_match and info_match) else 0.0

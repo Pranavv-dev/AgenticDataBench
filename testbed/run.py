@@ -90,9 +90,15 @@ def _get_agent_env(args):
     """
     env = {}
     if args.agent == "claude-code":
-        # Claude Code needs Anthropic API config (read from utils.config).
-        env["ANTHROPIC_API_KEY"] = ANTHROPIC_API_KEY
-        env["ANTHROPIC_BASE_URL"] = ANTHROPIC_BASE_URL
+        oauth_token = os.getenv("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
+        if oauth_token:
+            # A Claude subscription token (`claude setup-token`): the CLI then
+            # talks to Anthropic directly, so no API key or base URL is passed.
+            env["CLAUDE_CODE_OAUTH_TOKEN"] = oauth_token
+        else:
+            # Claude Code needs Anthropic API config (read from utils.config).
+            env["ANTHROPIC_API_KEY"] = ANTHROPIC_API_KEY
+            env["ANTHROPIC_BASE_URL"] = ANTHROPIC_BASE_URL
     if env:
         return {"environment": env}
     return {}

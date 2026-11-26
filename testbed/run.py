@@ -85,22 +85,12 @@ def generate_ipynb(trajectory):
 
 def _get_agent_env(args):
     """Build environment variables dict for the agent's Docker container.
-    Credentials come from utils.config (LLM config), with environment
-    variables acting as the override layer.
+
+    Claude Code gets none: as on Harbor, its credentials are passed to each
+    `docker exec` that starts it, not to the container
+    (da_agent/agent/harbor_claude_code.py reads them from this process's
+    environment, with utils.config as the fallback).
     """
-    env = {}
-    if args.agent == "claude-code":
-        oauth_token = os.getenv("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
-        if oauth_token:
-            # A Claude subscription token (`claude setup-token`): the CLI then
-            # talks to Anthropic directly, so no API key or base URL is passed.
-            env["CLAUDE_CODE_OAUTH_TOKEN"] = oauth_token
-        else:
-            # Claude Code needs Anthropic API config (read from utils.config).
-            env["ANTHROPIC_API_KEY"] = ANTHROPIC_API_KEY
-            env["ANTHROPIC_BASE_URL"] = ANTHROPIC_BASE_URL
-    if env:
-        return {"environment": env}
     return {}
 
 def test(

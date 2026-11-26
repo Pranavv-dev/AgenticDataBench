@@ -2,9 +2,9 @@
 Claude Code Agent Module - Agent implementation driving the Claude Code CLI.
 
 This module provides an agent that:
-- Writes a task prompt and a wrapper script to the agent's Docker container
-- Runs the `claude` CLI inside the container with a timeout, reading Anthropic
-  API credentials from the container's environment (injected by run.py)
+- Starts the `claude` CLI inside the agent's Docker container exactly as
+  Harbor's claude-code agent does (harbor_claude_code.py), with a timeout and
+  Anthropic API credentials from this process's environment
 - Parses Claude Code's stream-json (or json) output into a normalized trajectory,
   capturing per-step timing, tool uses, and token usage
 """
@@ -12,11 +12,13 @@ This module provides an agent that:
 import json
 import logging
 import os
-import getpass
 import subprocess
+import threading
 import time
 from da_agent.envs.da_agent import DA_Agent_Env
 from da_agent.agent.base import BaseAgent
+from da_agent.agent import harbor_claude_code
+from utils.config import ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL
 
 logger = logging.getLogger("da_agent")
 
@@ -88,86 +90,87 @@ fig = plt.gcf()
 Plotprocess.plot_process(fig, "{image_file_names[0]}")
 ```"""
 
-    def _write_wrapper_script(self):
-        wrapper_code = f'''#!/usr/bin/env python3
-import subprocess
-import sys
-import threading
+    def _exec_step(self, container_name, step, deadline, on_line=None):
+        """Run one Harbor exec (harbor_claude_code.launch_plan step) in the container.
 
-with open("{self.work_dir}/.task_prompt.txt") as f:
-    prompt = f.read()
+        Returns (exit code or None on timeout, output lines). On timeout every
+        process the agent started in the container is killed, as Harbor's
+        agent timeout ends the agent phase.
+        """
+        process = subprocess.Popen(
+            harbor_claude_code.docker_exec_argv(container_name, step),
+            env=harbor_claude_code.docker_exec_env(os.environ, step),
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        )
+        timed_out = threading.Event()
 
-proc = subprocess.Popen(
-    ["claude", "-p", prompt, "--output-format", "stream-json", "--verbose",
-     "--model", "{self.model}",
-     "--dangerously-skip-permissions"],
-    stdout=sys.stdout, stderr=sys.stderr
-)
+        def on_timeout():
+            timed_out.set()
+            subprocess.run(["docker", "exec", str(container_name), "bash", "-c", "kill -KILL -1"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            process.kill()
 
-def timeout_handler():
-    proc.terminate()
-    kill_timer = threading.Timer(300, proc.kill)
-    kill_timer.daemon = True
-    kill_timer.start()
-
-timer = threading.Timer({DEFAULT_TIME_OUT}, timeout_handler)
-timer.daemon = True
-timer.start()
-
-sys.exit(proc.wait())
-'''
-        wrapper_path = os.path.join(self.env.mnt_dir, ".run_claude.py")
-        with open(wrapper_path, "w") as f:
-            f.write(wrapper_code)
+        timer = threading.Timer(max(0.0, deadline - time.time()), on_timeout)
+        timer.daemon = True
+        timer.start()
+        lines = []
+        try:
+            for line in iter(process.stdout.readline, b""):
+                decoded = line.decode("utf-8", errors="ignore")
+                lines.append(decoded)
+                if on_line:
+                    on_line(decoded)
+            process.wait()
+        finally:
+            timer.cancel()
+        return (None if timed_out.is_set() else process.returncode), lines
 
     def run(self):
+        """Start Claude Code exactly as Harbor's claude-code agent does.
+
+        Harbor's setup exec, then its launch exec (prompt piped on stdin, logs
+        and CLAUDE_CONFIG_DIR under /logs/agent), as the container's default
+        user (root), with credentials from this process's environment. See
+        harbor_claude_code.py. Upstream ran ``claude -p <prompt> --model ...
+        --dangerously-skip-permissions`` as a non-root user instead.
+        """
         assert self.env is not None, "Environment is not set."
 
         task_prompt = self._build_task_prompt()
         container_name = self.env.container.name
+        source = harbor_claude_code.credentials_source(
+            os.environ, {"ANTHROPIC_API_KEY": ANTHROPIC_API_KEY, "ANTHROPIC_BASE_URL": ANTHROPIC_BASE_URL})
+        plan = harbor_claude_code.launch_plan(prompt=task_prompt, model=self.model, source=source)
+        deadline = time.time() + DEFAULT_TIME_OUT
 
-        # Write task prompt and wrapper script to mounted directory
-        task_path = os.path.join(self.env.mnt_dir, ".task_prompt.txt")
-        with open(task_path, "w") as f:
-            f.write(task_prompt)
-        self._write_wrapper_script()
-
-        # Execute wrapper script inside the container as the non-root user named
-        # after the host user.
-        process = subprocess.Popen(
-            ["docker", "exec", "--user", getpass.getuser(), str(container_name),
-             "python3", f"{self.work_dir}/.run_claude.py"],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT
-        )
-
-        output_lines = []
         self.event_timestamps = []
+
+        def on_line(decoded):
+            self.event_timestamps.append(time.time())
+            logger.debug("Claude Code: %s", decoded.strip())
+
+        result = (True, "Task completed")
+        output_lines = []
         try:
-            while True:
-                line = process.stdout.readline()
-                if not line and process.poll() is not None:
+            for step in plan:
+                code, lines = self._exec_step(container_name, step, deadline,
+                                              on_line=on_line if step["name"] == "run" else None)
+                if step["name"] == "run":
+                    output_lines = lines
+                if code is None:
+                    result = (False, f"Timeout after {DEFAULT_TIME_OUT}s")
                     break
-                if line:
-                    decoded = line.decode("utf-8", errors="ignore")
-                    output_lines.append(decoded)
-                    self.event_timestamps.append(time.time())
-                    logger.debug("Claude Code: %s", decoded.strip())
+                if code != 0:
+                    result = (False, f"Agent exited with code {code}" if step["name"] == "run"
+                              else f"Setup exited with code {code}: {''.join(lines)[:2000]}")
+                    break
         except Exception as e:
-            process.kill()
             logger.error("Error running Claude Code: %s", e)
-            self.raw_output = "".join(output_lines)
-            self._parse_trajectory()
-            return False, f"Error: {e}"
+            result = (False, f"Error: {e}")
 
         self.raw_output = "".join(output_lines)
-        exit_code = process.returncode
-
         self._parse_trajectory()
-
-        if exit_code == 0:
-            return True, "Task completed"
-        else:
-            return False, f"Agent exited with code {exit_code}"
+        return result
 
     def _parse_trajectory(self):
         self.trajectory = []
@@ -282,10 +285,12 @@ sys.exit(proc.wait())
                 "duration_ms": entry.get("duration_ms", 0),
                 "num_turns": entry.get("num_turns", 0),
             }
-            # Extract aggregate usage from the result event
+            # Extract aggregate usage and Claude Code's own cost figure
             usage = entry.get("usage", {})
             if usage:
                 result_entry["usage"] = usage
+            if entry.get("total_cost_usd") is not None:
+                result_entry["total_cost_usd"] = entry["total_cost_usd"]
             return result_entry
 
         return entry
